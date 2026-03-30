@@ -556,15 +556,35 @@ function importData(jsonStr){
 
 // ── MODULE-LEVEL sandbox + export (survive re-renders) ──────
 const SANDBOX_PLAYERS=[
-  {n:'Alex Rivera',w:'8.50',s:'WTN'},{n:'Jordan Smith',w:'12.30',s:'WTN'},
-  {n:'Casey Park',w:'15.75',s:'UTR'},{n:'Morgan Lee',w:'10.20',s:'WTN'},
-  {n:'Taylor Wong',w:'18.40',s:'DR'},{n:'Drew Chen',w:'7.80',s:'WTN'},
-  {n:'Sam Patel',w:'22.10',s:'manual'},{n:'Quinn Davis',w:'14.60',s:'WTN'}
+  {n:'Alex Rivera',   w:'22.50',wS:'24.10',wD:'22.50',s:'WTN'},
+  {n:'Jordan Smith',  w:'23.30',wS:'25.20',wD:'23.30',s:'WTN'},
+  {n:'Casey Park',    w:'24.75',wS:'26.10',wD:'24.75',s:'WTN'},
+  {n:'Morgan Lee',    w:'21.20',wS:'23.40',wD:'21.20',s:'WTN'},
+  {n:'Taylor Wong',   w:'25.40',wS:'27.80',wD:'25.40',s:'WTN'},
+  {n:'Drew Chen',     w:'22.80',wS:'24.50',wD:'22.80',s:'WTN'},
+  {n:'Sam Patel',     w:'26.10',wS:'28.30',wD:'26.10',s:'WTN'},
+  {n:'Quinn Davis',   w:'23.60',wS:'25.90',wD:'23.60',s:'WTN'},
+  {n:'Riley Torres',  w:'24.20',wS:'26.40',wD:'24.20',s:'WTN'},
+  {n:'Avery Kim',     w:'25.80',wS:'27.50',wD:'25.80',s:'WTN'},
+  {n:'Blake Foster',  w:'22.10',wS:'24.80',wD:'22.10',s:'WTN'},
+  {n:'Cameron Diaz',  w:'26.90',wS:'29.10',wD:'26.90',s:'WTN'},
+  {n:'Dakota Reed',   w:'23.40',wS:'25.60',wD:'23.40',s:'WTN'},
+  {n:'Emery Walsh',   w:'27.30',wS:'29.50',wD:'27.30',s:'WTN'},
+  {n:'Finley Cruz',   w:'24.50',wS:'26.70',wD:'24.50',s:'WTN'},
+  {n:'Harper Lane',   w:'25.10',wS:'27.20',wD:'25.10',s:'WTN'},
+  {n:'Indigo Nash',   w:'23.80',wS:'26.00',wD:'23.80',s:'WTN'},
+  {n:'Jamie Brooks',  w:'26.50',wS:'28.70',wD:'26.50',s:'WTN'},
+  {n:'Kendall Stone', w:'24.90',wS:'27.10',wD:'24.90',s:'WTN'},
+  {n:'Logan Pierce',  w:'22.60',wS:'24.90',wD:'22.60',s:'WTN'},
+  {n:'Max Sterling',  w:'25.70',wS:'27.90',wD:'25.70',s:'WTN'},
+  {n:'Nico Vale',     w:'23.10',wS:'25.30',wD:'23.10',s:'WTN'},
+  {n:'Oakley Hunt',   w:'27.80',wS:'30.10',wD:'27.80',s:'WTN'},
+  {n:'Parker Voss',   w:'24.30',wS:'26.50',wD:'24.30',s:'WTN'},
 ];
 function sandboxIsOn(){ return S.roster.some(p=>p.sandbox); }
 function sandboxLoad(){
   if(sandboxIsOn()) return;
-  SANDBOX_PLAYERS.forEach(p=>S.roster.push({id:uid(),name:p.n+' [test]',wtn:p.w,wtnSource:p.s,courtLocked:false,lockedCourtId:'',singlesOk:false,sandbox:true}));
+  SANDBOX_PLAYERS.forEach(p=>S.roster.push({id:uid(),name:p.n+' [test]',wtn:p.w,wtnS:p.wS||'',wtnD:p.wD||'',wtnSource:p.s,courtLocked:false,lockedCourtId:'',singlesOk:false,sandbox:true}));
   saveR();
 }
 function sandboxRemove(){
@@ -2370,9 +2390,9 @@ function renderManual(pg){
 
 // ── KOTC — King of the Court ─────────────────────────────────────────────────
 
-function kotcIsBackDraw(courtCount){ return courtCount>=5; }
-function kotcWinnerCourts(courtCount){ return Math.min(4,courtCount); }
-function kotcBackCourts(courtCount){ return Math.max(0,courtCount-4); }
+function kotcIsBackDraw(courtCount){ return courtCount>=6; }
+function kotcWinnerCourts(courtCount){ return courtCount>=6?4:courtCount; }
+function kotcBackCourts(courtCount){ return courtCount>=6?courtCount-4:0; }
 
 function kotcComputeMovement(round, courtCount){
   // Returns array of {courtNum, pairId, direction} after a round
@@ -2481,7 +2501,7 @@ function renderKotc(pg){
 function renderKotcLanding(pg){
   const card=mk('div','card');
   card.innerHTML=`<div class="ct">👑 King of the Court</div>
-    <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:16px;line-height:1.6">Run a KOTC session with 3–6 courts. Winners move up, losers move down. With 5–6 courts the bottom courts form a Back Draw with their own champion.</div>`;
+    <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:16px;line-height:1.6">Run a KOTC session with 3–8 courts. Winners move up, losers move down. With 6+ courts the bottom courts form a Back Draw with their own champion.</div>`;
   const startBtn=mk('button','btn btn-p');
   startBtn.style.cssText='width:100%;padding:13px;font-size:.95rem';
   startBtn.innerHTML='👑 Start KOTC Session';
@@ -2527,11 +2547,11 @@ function renderKotcSetup(pg){
 
   // Draw type info
   const drawInfo=mk('div');drawInfo.style.cssText='font-size:.72rem;color:var(--text-muted);padding:7px 10px;background:var(--surface2);border-radius:8px;margin-bottom:14px;border:1px solid var(--border)';
-  if(k.courtCount>=5){
+  if(k.courtCount>=6){
     const wc=kotcWinnerCourts(k.courtCount),bc=kotcBackCourts(k.courtCount);
     drawInfo.innerHTML=`Courts 1–${wc}: <strong>Winner Draw</strong> · Courts ${wc+1}–${k.courtCount}: <strong>Back Draw</strong> (${bc} court${bc>1?'s':''}). Back Draw Round 1 winners promote into Winner Draw.`;
   } else {
-    drawInfo.innerHTML=`<strong>MUD Format</strong> — Move Up Doubles. All ${k.courtCount} courts in one draw. Winner moves up, loser moves down each round.`;
+    drawInfo.innerHTML=`All ${k.courtCount} courts in one draw. Winners move up one court, losers move down one court each round.`;
   }
   card.appendChild(drawInfo);
 
@@ -2623,8 +2643,8 @@ function renderKotcIntake(pg){
     const pending=pendingIds.has(p.id);
     const chip=mk('div','chip'+(pending?' sel':'')+(inPair?' cp':''));
     chip.style.cssText=inPair?'opacity:.4;cursor:default':'cursor:pointer';
-    const bw=bestWtnStr(p);
-    chip.innerHTML=`<div class="chip-name">${esc(p.name)}</div><div class="chip-meta">${bw||'No rating'}</div>`;
+    const {str:bw}=courtWtnStr(p, k.matchType==='doubles');
+    chip.innerHTML=`<div class="chip-name">${esc(p.name)}</div><div class="chip-meta">${bw||bestWtnStr(p)||'No rating'}</div>`;
     if(!inPair){
       chip.onclick=()=>{
         if(!isDoubles){
