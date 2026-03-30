@@ -2395,48 +2395,77 @@ function kotcWinnerCourts(courtCount){ return courtCount>=6?4:courtCount; }
 function kotcBackCourts(courtCount){ return courtCount>=6?courtCount-4:0; }
 
 function kotcComputeMovement(round, courtCount){
-  // Returns array of {courtNum, pairId, direction} after a round
+  // Returns array of {pairId, fromCourt, toCourt, label} after a round
   const movements=[];
   const wc=kotcWinnerCourts(courtCount);
   const bc=kotcBackCourts(courtCount);
   const isFirstRound=round.roundNum===1;
 
-  round.courts.forEach(c=>{
-    const isBack=c.isBackDraw;
-    const winner=c.winner; // 'A' or 'B'
-    const winPair=winner==='A'?c.pairA:c.pairB;
-    const losPair=winner==='A'?c.pairB:c.pairA;
+  // Separate back draw and winner draw courts
+  const backCourts=round.courts.filter(c=>c.isBackDraw);
+  const winCourts=round.courts.filter(c=>!c.isBackDraw);
+
+  // ── Winner Draw movement (always standard MUD) ─────────────────────────────
+  winCourts.forEach(c=>{
+    const winPair=c.winner==='A'?c.pairA:c.pairB;
+    const losPair=c.winner==='A'?c.pairB:c.pairA;
     if(!winPair||!losPair) return;
 
-    if(isBack){
-      if(isFirstRound){
-        // Back draw winner promotes to bottom of winner draw
-        movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:wc, promoted:true});
-        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, stays:true});
+    if(c.courtNum===1){
+      movements.push({pairId:winPair.id, fromCourt:1, toCourt:1, crown:true, label:'👑 KOTC'});
+      movements.push({pairId:losPair.id, fromCourt:1, toCourt:2, label:'↓ Court 2'});
+    } else if(c.courtNum===wc){
+      // Bottom winner draw court — winner moves up, loser stays (or gets replaced by back draw promoted pair)
+      movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1, label:'↑ Court '+(c.courtNum-1)});
+      if(isFirstRound&&bc>0){
+        // Loser from bottom winner draw gets bumped out by back draw promotee — goes to back draw
+        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:wc+1, label:'↓ Back Draw'});
       } else {
-        // Back draw plays MUD within its own courts
-        if(c.courtNum>wc+1){
-          movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1});
-          movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum});
-        } else {
-          movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, crown:true});
-          movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum});
-        }
+        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, stays:true, label:'➡ Stays Court '+c.courtNum});
       }
     } else {
-      // Winner draw MUD movement
-      if(c.courtNum===1){
-        movements.push({pairId:winPair.id, fromCourt:1, toCourt:1, crown:true});
-        movements.push({pairId:losPair.id, fromCourt:1, toCourt:2});
-      } else if(c.courtNum===wc){
-        movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1});
-        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, stays:true});
-      } else {
-        movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1});
-        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum+1});
-      }
+      movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1, label:'↑ Court '+(c.courtNum-1)});
+      movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum+1, label:'↓ Court '+(c.courtNum+1)});
     }
   });
+
+  // ── Back Draw movement ────────────────────────────────────────────────────
+  if(bc>0){
+    if(isFirstRound){
+      // Round 1: back draw winners promote to Court wc (bottom of winner draw)
+      // Back draw losers consolidate — all back draw losers play each other next round
+      // Collect all back draw losers and assign them to back draw courts
+      const backLosers=[];
+      backCourts.forEach(c=>{
+        const losPair=c.winner==='A'?c.pairB:c.pairA;
+        const winPair=c.winner==='A'?c.pairA:c.pairB;
+        if(winPair) movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:wc, promoted:true, label:'⬆ Promoted to Winner Draw'});
+        if(losPair) backLosers.push({pairId:losPair.id, fromCourt:c.courtNum});
+      });
+      // Assign back draw losers to back draw courts (they play among themselves)
+      backLosers.forEach((m,i)=>{
+        const targetCourt=wc+1+Math.floor(i/2);
+        movements.push({pairId:m.pairId, fromCourt:m.fromCourt, toCourt:targetCourt, label:'➡ Back Draw Court '+targetCourt});
+      });
+    } else {
+      // Round 2+: back draw plays standard MUD within its own courts
+      backCourts.forEach(c=>{
+        const winPair=c.winner==='A'?c.pairA:c.pairB;
+        const losPair=c.winner==='A'?c.pairB:c.pairA;
+        if(!winPair||!losPair) return;
+        const firstBackCourt=wc+1;
+        if(c.courtNum===firstBackCourt){
+          // Top back draw court — winner is Back Draw champion, loser drops
+          movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, backCrown:true, label:'🥈 Back Draw Champion'});
+          movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:Math.min(c.courtNum+1, courtCount), label:'↓ Court '+(c.courtNum+1)});
+        } else {
+          movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1, label:'↑ Court '+(c.courtNum-1)});
+          movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, stays:true, label:'➡ Stays'});
+        }
+      });
+    }
+  }
+
   return movements;
 }
 
@@ -2923,13 +2952,14 @@ function renderKotcMovement(pg){
       const pair=k.pairs.find(p=>p.id===m.pairId);
       if(!pair) return;
       const name=pair.p1.name+(pair.p2?' & '+pair.p2.name:'');
-      let arrow='',color='var(--text)';
-      if(m.crown){arrow='👑 ';color='var(--gold)';}
-      else if(m.promoted){arrow='⬆ ';color='var(--green)';}
-      else if(m.stays){arrow='➡ ';color='var(--text-muted)';}
-      else if(m.toCourt<m.fromCourt){arrow='↑ Court '+m.toCourt+' ';color='var(--green)';}
-      else if(m.toCourt>m.fromCourt){arrow='↓ Court '+m.toCourt+' ';color='var(--red)';}
-      html+=`<div style="font-size:.8rem;color:${color};padding:2px 0">${arrow}${esc(name)}</div>`;
+      let color='var(--text)';
+      if(m.crown||m.backCrown) color='var(--gold)';
+      else if(m.promoted) color='var(--green)';
+      else if(m.stays) color='var(--text-muted)';
+      else if(m.toCourt<m.fromCourt) color='var(--green)';
+      else if(m.toCourt>m.fromCourt) color='var(--red)';
+      const label=m.label||(m.toCourt===m.fromCourt?'➡ Stays':'→ Court '+m.toCourt);
+      html+=`<div style="font-size:.8rem;color:${color};padding:2px 0">${label}: ${esc(name)}</div>`;
     });
     courtDiv.innerHTML=html;
     card.appendChild(courtDiv);
