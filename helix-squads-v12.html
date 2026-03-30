@@ -2638,7 +2638,7 @@ function renderKotcIntake(pg){
   const alreadyPairedIds=new Set(k.pairs.flatMap(p=>[p.p1?.id,p.p2?.id].filter(Boolean)));
   const pendingIds=new Set(k._pendingPair.map(p=>p.id));
 
-  S.roster.filter(p=>!p.sandbox).forEach(p=>{
+  S.roster.forEach(p=>{
     const inPair=alreadyPairedIds.has(p.id);
     const pending=pendingIds.has(p.id);
     const chip=mk('div','chip'+(pending?' sel':'')+(inPair?' cp':''));
