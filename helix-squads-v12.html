@@ -511,7 +511,7 @@ let _manualSelId=null; // module-level so it survives re-renders in manual mode
 function render(){
   clrT();
   const nav=$('nav');nav.innerHTML='';
-  [['roster','Squad'],['event','Live Sessions'],['kotc','👑 KOTC'],['quickmatch','Quick Match'],['history','History'],['analytics','Analytics']].forEach(([id,l])=>{
+  [['roster','Squad'],['event','Squad Sessions'],['kotc','👑 KOTC'],['quickmatch','Quick Match'],['history','History'],['analytics','Analytics']].forEach(([id,l])=>{
     const b=mk('button');b.textContent=''+{roster:'👥',event:'🎾',kotc:'👑',quickmatch:'⚡',history:'📋',analytics:'📊'}[id]+' '+l;
     if(S.page===id)b.classList.add('on');
     b.onclick=()=>{S.page=id;render();};
@@ -2369,7 +2369,7 @@ function renderManual(pg){
     ev.sessions=[];S.sub='setup';saveE();render();
   };
 
-  const startBtn=mk('button','btn btn-p','Start Live Session ►');
+  const startBtn=mk('button','btn btn-p','Start Squad Session ►');
   startBtn.style.cssText='flex:2;padding:12px;font-size:.95rem';
   if(!allFilled()){
     startBtn.style.opacity='0.45';
@@ -2822,12 +2822,33 @@ function renderKotcRound(pg){
     const pAname=pA?(pA.p1.name+(pA.p2?' & '+pA.p2.name:'')):'TBD';
     const pBname=pB?(pB.p1.name+(pB.p2?' & '+pB.p2.name:'')):'TBD';
 
+    // Build win probability line for this matchup
+    let predHtml='';
+    if(pA&&pB){
+      const _range=groupWtnRange(S.roster, k.pairs.flatMap(p=>[p.p1,p.p2]).filter(Boolean).map(p=>p.id));
+      const t1=[pA.p1,pA.p2].filter(Boolean).map(p=>S.roster.find(r=>r.id===p.id)||p);
+      const t2=[pB.p1,pB.p2].filter(Boolean).map(p=>S.roster.find(r=>r.id===p.id)||p);
+      const _sf=fmt;
+      if(t1.length&&t2.length&&_range){
+        const _learned=winProbLearned(t1,t2,S.roster,_range,S.history);
+        const prob1=_learned.prob!==null?_learned.prob:winProbRelative(t1,t2,S.roster,_range);
+        if(prob1!==null){
+          const predSc=predictSetScore(prob1,_sf);
+          const favTeam=prob1>=0.5?t1:t2;
+          const favName=favTeam.map(p=>p.name.split(' ')[0]).join('/');
+          const favProb=Math.round(Math.max(prob1,1-prob1)*100);
+          const adjBadge=_learned.adjusted?'<span style="font-size:.58rem;background:var(--green);color:#fff;padding:1px 5px;border-radius:8px;margin-left:4px">⚡ History</span>':'';
+          predHtml=`<div style="font-size:.62rem;color:var(--text-muted);text-align:center;padding:3px 6px;border-top:1px solid var(--border);margin-top:4px">🎯 ${_sf.label} &nbsp;|&nbsp; Predicted: <span style="color:var(--green)">${predSc}</span> &nbsp;|&nbsp; <span style="color:var(--green)">${favName}</span> <span style="color:var(--green)">${favProb}%</span>${adjBadge}</div>`;
+        }
+      }
+    }
+
     cc.innerHTML=`<div class="chdr"><div class="cname">Court ${c.courtNum} ${c.courtNum===1?'👑':''} <span style="font-size:.6rem;padding:1px 6px;border-radius:10px;margin-left:4px;${isBack?'background:rgba(201,168,76,.2);color:var(--gold)':'background:rgba(52,199,89,.15);color:var(--green)'};">${isBack?'Back Draw':'Winner Draw'}</span></div></div>
       <div class="tgrid">
         <div class="team"><div class="pname">${esc(pAname)}</div>${pA?'<div class="pwtn">'+[pA.p1,pA.p2].filter(Boolean).map(p=>{const w=courtWtnStr(p,k.matchType==='doubles');return w.str||'';}).filter(Boolean).join(' · ')+'</div>':''}</div>
         <div class="vs-txt">VS</div>
         <div class="team r"><div class="pname">${esc(pBname)}</div>${pB?'<div class="pwtn">'+[pB.p1,pB.p2].filter(Boolean).map(p=>{const w=courtWtnStr(p,k.matchType==='doubles');return w.str||'';}).filter(Boolean).join(' · ')+'</div>':''}</div>
-      </div>`;
+      </div>${predHtml}`;
 
     // Score entry
     if(!c.score.confirmed){
@@ -3002,6 +3023,37 @@ function renderKotcSummary(pg){
     card.appendChild(gCard);
   }
 
+  // ── vs Expected analytics ──────────────────────────────────────────────────
+  const kotcMatches=S.history.filter(h=>h.isKOTC&&h._k&&h._k.startsWith('kotc_'+k.id));
+  if(kotcMatches.length){
+    const _range=groupWtnRange(S.roster,k.pairs.flatMap(p=>[p.p1,p.p2]).filter(Boolean).map(p=>p.id));
+    const allPlayers=[...new Map(k.pairs.flatMap(p=>[p.p1,p.p2]).filter(Boolean).map(p=>[p.id,p])).values()];
+    const statsCard=mk('div','card');statsCard.style.marginTop='10px';
+    statsCard.innerHTML='<div class="ct" style="font-size:.82rem">📊 vs Expected</div><div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">Who punched above or below their WTN this session</div>';
+    const rows=allPlayers.map(p=>{
+      const rp=S.roster.find(r=>r.id===p.id)||p;
+      const mm=kotcMatches.filter(h=>[...h.team1,...h.team2].some(x=>x.id===p.id));
+      if(!mm.length) return null;
+      const vse=getVsExpected(p.id,kotcMatches,S.roster,_range);
+      if(!vse||vse.total<1) return null;
+      return{p:rp,vse,matches:mm.length};
+    }).filter(Boolean).sort((a,b)=>b.vse.pct-a.vse.pct);
+    if(rows.length){
+      rows.forEach((r,i)=>{
+        const row=mk('div');
+        row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:6px 4px;border-bottom:1px solid var(--border);font-size:.78rem';
+        const diff=(r.vse.actual-r.vse.expected).toFixed(1);
+        const diffStr=(parseFloat(diff)>0?'+':'')+diff;
+        const color=parseFloat(diff)>0?'var(--green)':parseFloat(diff)<0?'var(--red)':'var(--text-muted)';
+        row.innerHTML='<span style="font-weight:'+(i<3?600:400)+';color:var(--text)">'+(i===0?'🔥 ':i===1?'⬆ ':i===2?'➡ ':'')+esc(r.p.name)+'</span><span style="display:flex;gap:10px;align-items:center"><span style="color:var(--text-muted);font-size:.7rem">'+r.vse.actual+'-'+(r.vse.total-r.vse.actual)+' ('+r.matches+'M)</span><span style="color:'+color+';font-weight:600;min-width:36px;text-align:right">'+diffStr+'W</span></span>';
+        statsCard.appendChild(row);
+      });
+    } else {
+      statsCard.innerHTML+='<div class="empty">Not enough rated matchups to calculate.</div>';
+    }
+    card.appendChild(statsCard);
+  }
+
   const doneBtn=mk('button','btn btn-p');doneBtn.innerHTML='Done';doneBtn.style.cssText='width:100%;padding:12px;margin-top:14px;font-size:.9rem';
   doneBtn.onclick=()=>{k.status='complete';saveKotc();render();};
   card.appendChild(doneBtn);
@@ -3173,7 +3225,7 @@ function renderSetup(pg){
   const nmFg=mk('div','fg');nmFg.style.cssText='flex:1;min-width:180px';
   nmFg.innerHTML='<label>Session Name</label>';
   const nmInp=document.createElement('input');nmInp.type='text';nmInp.id='ev-nm';
-  nmInp.placeholder='e.g. Tuesday Night Live Session';nmInp.style.width='100%';
+  nmInp.placeholder='e.g. Tuesday Night Squad Session';nmInp.style.width='100%';
   nmInp.value=esc(ev.name||'');nmFg.appendChild(nmInp);nmRow.appendChild(nmFg);card1.appendChild(nmRow);
   const dtRow=mk('div','row');
   const dtFg=mk('div','fg');dtFg.innerHTML='<label>Date</label>';
@@ -5602,7 +5654,7 @@ function renderHistory(pg){
 }
 
 function renderAnalytics(pg){
-  if(!S.history.length){const c=mk('div','card');c.innerHTML='<div class="ct">Analytics</div><div class="empty">Play some live sessions to unlock analytics.</div>';pg.appendChild(c);return;}
+  if(!S.history.length){const c=mk('div','card');c.innerHTML='<div class="ct">Analytics</div><div class="empty">Play some squad sessions to unlock analytics.</div>';pg.appendChild(c);return;}
   const sc=mk('div','card');
   sc.innerHTML=`<div class="ct">Player Analytics</div><select style="width:100%" id="anas"><option value="">Select a player...</option>${S.roster.map(p=>`<option value="${p.id}" ${S.apid===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select>`;
   pg.appendChild(sc);
