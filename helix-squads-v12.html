@@ -2540,7 +2540,7 @@ function renderKotcSetup(pg){
     const btn=mk('button');btn.textContent=n;
     const active=k.courtCount===n;
     btn.style.cssText=`padding:8px 16px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.88rem;cursor:pointer;font-family:inherit`;
-    btn.onclick=()=>{k.courtCount=n;saveKotc();renderKotcSetup(pg.parentElement||pg);pg.innerHTML='';renderKotcSetup(pg);};
+    btn.onclick=()=>{k.courtCount=n;saveKotc();render();};
     ccRow.appendChild(btn);
   });
   card.appendChild(ccLbl);card.appendChild(ccRow);
@@ -2562,7 +2562,7 @@ function renderKotcSetup(pg){
     const btn=mk('button');btn.textContent=t.charAt(0).toUpperCase()+t.slice(1);
     const active=k.matchType===t;
     btn.style.cssText=`padding:8px 16px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.88rem;cursor:pointer;font-family:inherit`;
-    btn.onclick=()=>{k.matchType=t;saveKotc();pg.innerHTML='';renderKotcSetup(pg);};
+    btn.onclick=()=>{k.matchType=t;saveKotc();render();};
     mtRow.appendChild(btn);
   });
   card.appendChild(mtLbl);card.appendChild(mtRow);
@@ -2574,7 +2574,7 @@ function renderKotcSetup(pg){
     const btn=mk('button');btn.textContent=o.label;
     const active=k.seedMethod===o.key;
     btn.style.cssText=`padding:7px 13px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.82rem;cursor:pointer;font-family:inherit`;
-    btn.onclick=()=>{k.seedMethod=o.key;saveKotc();pg.innerHTML='';renderKotcSetup(pg);};
+    btn.onclick=()=>{k.seedMethod=o.key;saveKotc();render();};
     smRow.appendChild(btn);
   });
   card.appendChild(smLbl);card.appendChild(smRow);
@@ -2586,7 +2586,7 @@ function renderKotcSetup(pg){
     const btn=mk('button');btn.textContent=f.label;
     const active=(k.format||'no-ad')===key;
     btn.style.cssText=`padding:6px 11px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.75rem;cursor:pointer;font-family:inherit`;
-    btn.onclick=()=>{k.format=key;saveKotc();pg.innerHTML='';renderKotcSetup(pg);};
+    btn.onclick=()=>{k.format=key;saveKotc();render();};
     fmtRow.appendChild(btn);
   });
   card.appendChild(fmtLbl);card.appendChild(fmtRow);
