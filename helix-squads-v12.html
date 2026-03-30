@@ -290,12 +290,13 @@ input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-
 <script>
 'use strict';
 const DB={load(k,d){try{const v=localStorage.getItem('htcm4_'+k);return v?JSON.parse(v):d;}catch{return d;}},save(k,v){try{localStorage.setItem('htcm4_'+k,JSON.stringify(v));}catch{}}};
-const S={roster:DB.load('roster',[]),nextId:DB.load('nextId',1),history:DB.load('history',[]),event:DB.load('event',null),teams:DB.load('teams',[]),seasons:DB.load('seasons',[]),page:'roster',sub:'setup',sess:0,pv:false,vpid:null,apid:null,qm:null,_lbTeamFilter:'team'};
+const S={roster:DB.load('roster',[]),nextId:DB.load('nextId',1),history:DB.load('history',[]),event:DB.load('event',null),teams:DB.load('teams',[]),seasons:DB.load('seasons',[]),kotc:DB.load('kotc',null),page:'roster',sub:'setup',sess:0,pv:false,vpid:null,apid:null,qm:null,_lbTeamFilter:'team'};
 const saveR=()=>{DB.save('roster',S.roster);DB.save('nextId',S.nextId);};
 const saveTeams=()=>DB.save('teams',S.teams);
 const saveH=()=>DB.save('history',S.history);
 const saveE=()=>DB.save('event',S.event);
 const saveSeas=()=>DB.save('seasons',S.seasons);
+const saveKotc=()=>DB.save('kotc',S.kotc);
 
 // ── Roster seed (runs once if roster is empty) ───────────────────────────────
 (function seedRoster(){
@@ -352,6 +353,21 @@ function bestWtnInfo(p){
 }
 // Short display string e.g. "21.5-S"
 function bestWtnStr(p){const b=bestWtnInfo(p);return b?b.val.toFixed(1)+b.tag:null;}
+// Context-aware WTN for court display — shows D rating for doubles, S for singles
+// Returns {str, note} where note is a warning if falling back to wrong type
+function courtWtnStr(p, isDoubles){
+  const s=parseFloat(p.wtnS),d=parseFloat(p.wtnD);
+  const hasS=!isNaN(s)&&s>0,hasD=!isNaN(d)&&d>0;
+  if(isDoubles){
+    if(hasD) return{str:d.toFixed(1)+'-D',note:null};
+    if(hasS) return{str:s.toFixed(1)+'-S',note:'singles only'};
+  } else {
+    if(hasS) return{str:s.toFixed(1)+'-S',note:null};
+    if(hasD) return{str:d.toFixed(1)+'-D',note:'doubles only'};
+  }
+  const g=parseFloat(p.wtn);
+  return(!isNaN(g)&&g>0)?{str:g.toFixed(1),note:null}:{str:null,note:null};
+}
 // Full tooltip string e.g. "S: 21.5 · D: 24.1"
 function wtnTooltip(p){
   const parts=[];
@@ -495,8 +511,8 @@ let _manualSelId=null; // module-level so it survives re-renders in manual mode
 function render(){
   clrT();
   const nav=$('nav');nav.innerHTML='';
-  [['roster','Squad'],['event','Live Sessions'],['quickmatch','Quick Match'],['history','History'],['analytics','Analytics']].forEach(([id,l])=>{
-    const b=mk('button');b.textContent=''+{roster:'👥',event:'🎾',quickmatch:'⚡',history:'📋',analytics:'📊'}[id]+' '+l;
+  [['roster','Squad'],['event','Live Sessions'],['kotc','👑 KOTC'],['quickmatch','Quick Match'],['history','History'],['analytics','Analytics']].forEach(([id,l])=>{
+    const b=mk('button');b.textContent=''+{roster:'👥',event:'🎾',kotc:'👑',quickmatch:'⚡',history:'📋',analytics:'📊'}[id]+' '+l;
     if(S.page===id)b.classList.add('on');
     b.onclick=()=>{S.page=id;render();};
     nav.appendChild(b);
@@ -509,6 +525,7 @@ function render(){
   const pg=$('page');pg.innerHTML='';
   if(S.page==='roster')renderRoster(pg);
   else if(S.page==='event')renderEvent(pg);
+  else if(S.page==='kotc')renderKotc(pg);
   else if(S.page==='history')renderHistory(pg);
   else if(S.page==='quickmatch')renderQuickMatch(pg);
   else if(S.page==='analytics')renderAnalytics(pg);
@@ -1489,7 +1506,7 @@ function renderSquadList(){
     // DNA tap zone
     const tapZone=mk('div');
     tapZone.style.cssText='flex:1;display:flex;align-items:center;gap:10px;padding:0 6px;';
-    tapZone.onclick=()=>renderPlayerDNAModal(p,S.history,S.roster,range,pg);
+    tapZone.onclick=()=>renderPlayerDNAModal(p,S.history,S.roster,range,$('page'));
 
     const avatar=mk('div');
     avatar.style.cssText=`width:36px;height:36px;border-radius:50%;background:${mom?mom.bg:'var(--green-pale)'};display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;border:2px solid ${mom?mom.color:'var(--green)'};`;
@@ -2351,6 +2368,626 @@ function renderManual(pg){
   pg.appendChild(btnRow);
 }
 
+// ── KOTC — King of the Court ─────────────────────────────────────────────────
+
+function kotcIsBackDraw(courtCount){ return courtCount>=5; }
+function kotcWinnerCourts(courtCount){ return Math.min(4,courtCount); }
+function kotcBackCourts(courtCount){ return Math.max(0,courtCount-4); }
+
+function kotcComputeMovement(round, courtCount){
+  // Returns array of {courtNum, pairId, direction} after a round
+  const movements=[];
+  const wc=kotcWinnerCourts(courtCount);
+  const bc=kotcBackCourts(courtCount);
+  const isFirstRound=round.roundNum===1;
+
+  round.courts.forEach(c=>{
+    const isBack=c.isBackDraw;
+    const winner=c.winner; // 'A' or 'B'
+    const winPair=winner==='A'?c.pairA:c.pairB;
+    const losPair=winner==='A'?c.pairB:c.pairA;
+    if(!winPair||!losPair) return;
+
+    if(isBack){
+      if(isFirstRound){
+        // Back draw winner promotes to bottom of winner draw
+        movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:wc, promoted:true});
+        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, stays:true});
+      } else {
+        // Back draw plays MUD within its own courts
+        if(c.courtNum>wc+1){
+          movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1});
+          movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum});
+        } else {
+          movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, crown:true});
+          movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum});
+        }
+      }
+    } else {
+      // Winner draw MUD movement
+      if(c.courtNum===1){
+        movements.push({pairId:winPair.id, fromCourt:1, toCourt:1, crown:true});
+        movements.push({pairId:losPair.id, fromCourt:1, toCourt:2});
+      } else if(c.courtNum===wc){
+        movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1});
+        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum, stays:true});
+      } else {
+        movements.push({pairId:winPair.id, fromCourt:c.courtNum, toCourt:c.courtNum-1});
+        movements.push({pairId:losPair.id, fromCourt:c.courtNum, toCourt:c.courtNum+1});
+      }
+    }
+  });
+  return movements;
+}
+
+function kotcBuildNextRound(kotc){
+  const lastRound=kotc.rounds[kotc.rounds.length-1];
+  const movements=kotcComputeMovement(lastRound, kotc.courtCount);
+  // Apply movements (with any captain overrides already baked in)
+  const nextCourts=[];
+  const courtCount=kotc.courtCount;
+  const wc=kotcWinnerCourts(courtCount);
+  const bc=kotcBackCourts(courtCount);
+
+  // Build court slots
+  for(let i=1;i<=courtCount;i++){
+    const isBack=i>wc;
+    // Find pairs moving to this court
+    const comers=movements.filter(m=>m.toCourt===i);
+    const pairA=comers[0]?kotc.pairs.find(p=>p.id===comers[0].pairId):null;
+    const pairB=comers[1]?kotc.pairs.find(p=>p.id===comers[1].pairId):null;
+    nextCourts.push({courtNum:i,isBackDraw:isBack,pairA:pairA||null,pairB:pairB||null,score:{s1:'',s2:'',tb:'',confirmed:false},winner:null});
+  }
+  return {roundNum:lastRound.roundNum+1, courts:nextCourts, movements};
+}
+
+function kotcCommitRound(kotc){
+  // Write all confirmed KOTC matches to S.history
+  const lastRound=kotc.rounds[kotc.rounds.length-1];
+  lastRound.courts.forEach(c=>{
+    if(!c.score||!c.score.confirmed) return;
+    const pA=c.pairA,pB=c.pairB;
+    if(!pA||!pB) return;
+    const t1=[pA.p1,pA.p2].filter(Boolean).map(p=>({id:p.id,name:p.name}));
+    const t2=[pB.p1,pB.p2].filter(Boolean).map(p=>({id:p.id,name:p.name}));
+    const key='kotc_'+kotc.id+'_r'+lastRound.roundNum+'_c'+c.courtNum;
+    if(S.history.some(h=>h._k===key)) return;
+    S.history.push({
+      _k:key, date:kotc.date, eventName:kotc.name,
+      court:String(c.courtNum), sessionLabel:'Round '+lastRound.roundNum,
+      fmt:kotc.matchType==='singles'?'singles':'doubles',
+      team1:t1, team2:t2,
+      score1:parseInt(c.score.s1)||0, score2:parseInt(c.score.s2)||0,
+      isKOTC:true, courtNum:c.courtNum, roundNum:lastRound.roundNum
+    });
+  });
+  saveH();
+}
+
+function renderKotc(pg){
+  const k=S.kotc;
+  // No active session — show setup or start button
+  if(!k||k.status==='complete'){
+    renderKotcLanding(pg); return;
+  }
+  if(k.status==='setup') { renderKotcSetup(pg); return; }
+  if(k.status==='intake') { renderKotcIntake(pg); return; }
+  if(k.status==='seeding') { renderKotcSeeding(pg); return; }
+  if(k.status==='active') { renderKotcRound(pg); return; }
+  if(k.status==='movement') { renderKotcMovement(pg); return; }
+  if(k.status==='summary') { renderKotcSummary(pg); return; }
+}
+
+function renderKotcLanding(pg){
+  const card=mk('div','card');
+  card.innerHTML=`<div class="ct">👑 King of the Court</div>
+    <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:16px;line-height:1.6">Run a KOTC session with 3–6 courts. Winners move up, losers move down. With 5–6 courts the bottom courts form a Back Draw with their own champion.</div>`;
+  const startBtn=mk('button','btn btn-p');
+  startBtn.style.cssText='width:100%;padding:13px;font-size:.95rem';
+  startBtn.innerHTML='👑 Start KOTC Session';
+  startBtn.onclick=()=>{
+    S.kotc={id:Date.now(),name:'KOTC '+today(),date:today(),courtCount:4,matchType:'doubles',seedMethod:'ai',format:'no-ad',pairs:[],rounds:[],status:'setup',_nextPairId:1};
+    saveKotc();render();
+  };
+  card.appendChild(startBtn);
+
+  // Past sessions summary
+  const pastMatches=S.history.filter(h=>h.isKOTC);
+  if(pastMatches.length){
+    const info=mk('div');info.style.cssText='margin-top:14px;font-size:.75rem;color:var(--text-muted);text-align:center';
+    info.textContent=pastMatches.length+' KOTC matches in history';
+    card.appendChild(info);
+  }
+  pg.appendChild(card);
+}
+
+function renderKotcSetup(pg){
+  const k=S.kotc;
+  const card=mk('div','card');
+  card.innerHTML=`<div class="ct">👑 KOTC Setup</div>`;
+
+  // Session name
+  const nmLbl=mk('label');nmLbl.style.cssText='font-size:.72rem;color:var(--text-muted);display:block;margin-bottom:4px';nmLbl.textContent='Session Name';
+  const nmInp=document.createElement('input');nmInp.type='text';nmInp.value=k.name;
+  nmInp.style.cssText='width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:.88rem;font-family:inherit;margin-bottom:12px';
+  nmInp.oninput=()=>{k.name=nmInp.value;saveKotc();};
+  card.appendChild(nmLbl);card.appendChild(nmInp);
+
+  // Court count
+  const ccLbl=mk('div');ccLbl.style.cssText='font-size:.72rem;color:var(--text-muted);margin-bottom:6px';ccLbl.textContent='Number of Courts';
+  const ccRow=mk('div');ccRow.style.cssText='display:flex;gap:7px;margin-bottom:14px';
+  [3,4,5,6].forEach(n=>{
+    const btn=mk('button');btn.textContent=n;
+    const active=k.courtCount===n;
+    btn.style.cssText=`padding:8px 16px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.88rem;cursor:pointer;font-family:inherit`;
+    btn.onclick=()=>{k.courtCount=n;saveKotc();renderKotcSetup(pg.parentElement||pg);pg.innerHTML='';renderKotcSetup(pg);};
+    ccRow.appendChild(btn);
+  });
+  card.appendChild(ccLbl);card.appendChild(ccRow);
+
+  // Draw type info
+  const drawInfo=mk('div');drawInfo.style.cssText='font-size:.72rem;color:var(--text-muted);padding:7px 10px;background:var(--surface2);border-radius:8px;margin-bottom:14px;border:1px solid var(--border)';
+  if(k.courtCount>=5){
+    const wc=kotcWinnerCourts(k.courtCount),bc=kotcBackCourts(k.courtCount);
+    drawInfo.innerHTML=`Courts 1–${wc}: <strong>Winner Draw</strong> · Courts ${wc+1}–${k.courtCount}: <strong>Back Draw</strong> (${bc} court${bc>1?'s':''}). Back Draw Round 1 winners promote into Winner Draw.`;
+  } else {
+    drawInfo.innerHTML=`<strong>MUD Format</strong> — Move Up Doubles. All ${k.courtCount} courts in one draw. Winner moves up, loser moves down each round.`;
+  }
+  card.appendChild(drawInfo);
+
+  // Match type
+  const mtLbl=mk('div');mtLbl.style.cssText='font-size:.72rem;color:var(--text-muted);margin-bottom:6px';mtLbl.textContent='Match Type';
+  const mtRow=mk('div');mtRow.style.cssText='display:flex;gap:7px;margin-bottom:14px';
+  ['doubles','singles'].forEach(t=>{
+    const btn=mk('button');btn.textContent=t.charAt(0).toUpperCase()+t.slice(1);
+    const active=k.matchType===t;
+    btn.style.cssText=`padding:8px 16px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.88rem;cursor:pointer;font-family:inherit`;
+    btn.onclick=()=>{k.matchType=t;saveKotc();pg.innerHTML='';renderKotcSetup(pg);};
+    mtRow.appendChild(btn);
+  });
+  card.appendChild(mtLbl);card.appendChild(mtRow);
+
+  // Seed method
+  const smLbl=mk('div');smLbl.style.cssText='font-size:.72rem;color:var(--text-muted);margin-bottom:6px';smLbl.textContent='Initial Court Assignment';
+  const smRow=mk('div');smRow.style.cssText='display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px';
+  [{key:'ai',label:'AI by WTN'},{key:'random',label:'Random'},{key:'manual',label:'Manual'}].forEach(o=>{
+    const btn=mk('button');btn.textContent=o.label;
+    const active=k.seedMethod===o.key;
+    btn.style.cssText=`padding:7px 13px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.82rem;cursor:pointer;font-family:inherit`;
+    btn.onclick=()=>{k.seedMethod=o.key;saveKotc();pg.innerHTML='';renderKotcSetup(pg);};
+    smRow.appendChild(btn);
+  });
+  card.appendChild(smLbl);card.appendChild(smRow);
+
+  // Match format
+  const fmtLbl=mk('div');fmtLbl.style.cssText='font-size:.72rem;color:var(--text-muted);margin-bottom:6px';fmtLbl.textContent='Match Format';
+  const fmtRow=mk('div');fmtRow.style.cssText='display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px';
+  Object.entries(MATCH_FORMATS).forEach(([key,f])=>{
+    const btn=mk('button');btn.textContent=f.label;
+    const active=(k.format||'no-ad')===key;
+    btn.style.cssText=`padding:6px 11px;border-radius:8px;border:1.5px solid ${active?'var(--green)':'var(--border)'};background:${active?'var(--green)':'var(--surface)'};color:${active?'#fff':'var(--text)'};font-size:.75rem;cursor:pointer;font-family:inherit`;
+    btn.onclick=()=>{k.format=key;saveKotc();pg.innerHTML='';renderKotcSetup(pg);};
+    fmtRow.appendChild(btn);
+  });
+  card.appendChild(fmtLbl);card.appendChild(fmtRow);
+
+  const nextBtn=mk('button','btn btn-p');
+  nextBtn.style.cssText='width:100%;padding:12px;font-size:.9rem';
+  nextBtn.innerHTML='Player Intake →';
+  nextBtn.onclick=()=>{k.status='intake';saveKotc();render();};
+  card.appendChild(nextBtn);
+
+  const cancelBtn=mk('button','btn btn-s btn-sm');
+  cancelBtn.style.cssText='width:100%;margin-top:8px;padding:9px';
+  cancelBtn.textContent='Cancel';
+  cancelBtn.onclick=()=>{S.kotc=null;saveKotc();render();};
+  card.appendChild(cancelBtn);
+  pg.appendChild(card);
+}
+
+function renderKotcIntake(pg){
+  const k=S.kotc;
+  const isDoubles=k.matchType==='doubles';
+  // Pending pair being built
+  if(!k._pendingPair) k._pendingPair=[];
+
+  const hdr=mk('div','card');
+  hdr.innerHTML=`<div class="ct">👑 Player Intake</div><div style="font-size:.75rem;color:var(--text-muted);line-height:1.6">${isDoubles?'Tap two players to lock them as a pair. Unpaired players will be AI-matched.':'Tap players to add them to the session.'}</div>`;
+  pg.appendChild(hdr);
+
+  // Locked pairs display
+  if(k.pairs.length){
+    const pairsCard=mk('div','card');
+    pairsCard.innerHTML=`<div class="ct" style="font-size:.78rem">Locked Pairs (${k.pairs.length})</div>`;
+    k.pairs.forEach((pair,i)=>{
+      const row=mk('div');row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:6px 4px;border-bottom:1px solid var(--border)';
+      const names=mk('div');names.style.cssText='font-size:.82rem;font-weight:600;color:var(--text)';
+      names.innerHTML=`🔒 ${esc(pair.p1.name)}${pair.p2?' + '+esc(pair.p2.name):''}${pair.isGuest?'<span style="font-size:.6rem;color:var(--gold);margin-left:5px">guest</span>':''}`;
+      const rm=mk('button');rm.textContent='×';rm.style.cssText='border:none;background:none;cursor:pointer;color:var(--text-muted);font-size:1rem';
+      rm.onclick=()=>{k.pairs.splice(i,1);k._pendingPair=[];saveKotc();render();};
+      row.appendChild(names);row.appendChild(rm);
+      pairsCard.appendChild(row);
+    });
+    pg.appendChild(pairsCard);
+  }
+
+  // Roster chips
+  const rosterCard=mk('div','card');
+  rosterCard.innerHTML=`<div style="font-size:.62rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin-bottom:8px">${isDoubles?'Tap to select (2 = locked pair)':'Tap to add to session'}</div>`;
+  const chipWrap=mk('div');chipWrap.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px';
+  const alreadyPairedIds=new Set(k.pairs.flatMap(p=>[p.p1?.id,p.p2?.id].filter(Boolean)));
+  const pendingIds=new Set(k._pendingPair.map(p=>p.id));
+
+  S.roster.filter(p=>!p.sandbox).forEach(p=>{
+    const inPair=alreadyPairedIds.has(p.id);
+    const pending=pendingIds.has(p.id);
+    const chip=mk('div','chip'+(pending?' sel':'')+(inPair?' cp':''));
+    chip.style.cssText=inPair?'opacity:.4;cursor:default':'cursor:pointer';
+    const bw=bestWtnStr(p);
+    chip.innerHTML=`<div class="chip-name">${esc(p.name)}</div><div class="chip-meta">${bw||'No rating'}</div>`;
+    if(!inPair){
+      chip.onclick=()=>{
+        if(!isDoubles){
+          // Singles — each player is their own "pair"
+          if(alreadyPairedIds.has(p.id)) return;
+          k.pairs.push({id:k._nextPairId++,p1:p,p2:null,isGuest:false});
+          saveKotc();render();
+        } else {
+          if(pending){ k._pendingPair=k._pendingPair.filter(x=>x.id!==p.id); }
+          else if(k._pendingPair.length<2){ k._pendingPair.push(p); }
+          if(k._pendingPair.length===2){
+            k.pairs.push({id:k._nextPairId++,p1:k._pendingPair[0],p2:k._pendingPair[1],isGuest:false});
+            k._pendingPair=[];
+          }
+          saveKotc();render();
+        }
+      };
+    }
+    chipWrap.appendChild(chip);
+  });
+  rosterCard.appendChild(chipWrap);
+
+  // Pending pair status
+  if(isDoubles&&k._pendingPair.length===1){
+    const st=mk('div');st.style.cssText='font-size:.75rem;color:var(--gold);margin-bottom:8px';
+    st.textContent='Selected: '+k._pendingPair[0].name+' — tap a second player to lock the pair';
+    rosterCard.appendChild(st);
+  }
+  pg.appendChild(rosterCard);
+
+  // Walk-up guest add
+  const guestCard=mk('div','card');
+  guestCard.innerHTML=`<div class="ct" style="font-size:.78rem">+ Add Walk-up Player</div>`;
+  const gRow=mk('div');gRow.style.cssText='display:flex;gap:7px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px';
+
+  const makeGInp=(ph,w)=>{const i=document.createElement('input');i.type='text';i.placeholder=ph;i.style.cssText=`flex:${w||1};min-width:80px;padding:7px 9px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:.8rem;font-family:inherit`;return i;};
+  const gName=makeGInp('Full Name',2);
+  const gWtnS=makeGInp('WTN-S',1);
+  const gWtnD=makeGInp('WTN-D',1);
+  const gAdd=mk('button','btn btn-s btn-sm');gAdd.textContent='+ Add';gAdd.style.cssText='padding:7px 12px;flex-shrink:0';
+  gAdd.onclick=()=>{
+    const name=gName.value.trim();
+    if(!name){alert('Enter a name.');return;}
+    const gp={id:S.nextId++,name,wtn:gWtnS.value||gWtnD.value||'',wtnS:gWtnS.value.trim(),wtnD:gWtnD.value.trim(),isGuest:true,sandbox:false};
+    saveR();
+    if(!isDoubles){
+      k.pairs.push({id:k._nextPairId++,p1:gp,p2:null,isGuest:true});
+      saveKotc();render();
+    } else {
+      k._pendingPair.push(gp);
+      if(k._pendingPair.length===2){
+        k.pairs.push({id:k._nextPairId++,p1:k._pendingPair[0],p2:k._pendingPair[1],isGuest:k._pendingPair.some(x=>x.isGuest)});
+        k._pendingPair=[];
+      }
+      saveKotc();render();
+    }
+    gName.value='';gWtnS.value='';gWtnD.value='';
+  };
+  gRow.appendChild(gName);gRow.appendChild(gWtnS);gRow.appendChild(gWtnD);gRow.appendChild(gAdd);
+  guestCard.appendChild(gRow);
+  pg.appendChild(guestCard);
+
+  // Navigation
+  const minPairs=k.courtCount*(isDoubles?2:1); // needs 2 pairs per court for doubles, but at minimum courtCount pairs
+  const pairsNeeded=k.courtCount*2; // 2 pairs per court
+  const ready=k.pairs.length>=2;
+  const btnRow=mk('div');btnRow.style.cssText='display:flex;gap:8px;margin-top:4px';
+  const backBtn=mk('button','btn btn-s');backBtn.textContent='← Back';backBtn.style.cssText='flex:1;padding:11px';
+  backBtn.onclick=()=>{k.status='setup';saveKotc();render();};
+  const nextBtn=mk('button','btn btn-p');nextBtn.innerHTML='Seed Courts →';nextBtn.style.cssText=`flex:2;padding:11px;opacity:${ready?1:.45}`;
+  if(!ready) nextBtn.title='Add at least 2 pairs to continue';
+  nextBtn.onclick=()=>{
+    if(!ready) return;
+    // Pair up any solo players left in pending
+    if(k._pendingPair.length===1){
+      k.pairs.push({id:k._nextPairId++,p1:k._pendingPair[0],p2:null,isGuest:k._pendingPair[0].isGuest});
+      k._pendingPair=[];
+    }
+    k.status='seeding';saveKotc();render();
+  };
+  const countNote=mk('div');countNote.style.cssText='font-size:.7rem;color:var(--text-muted);text-align:center;margin-top:6px';
+  countNote.textContent=k.pairs.length+' pair'+(k.pairs.length!==1?'s':'')+' · '+k.courtCount+' courts need '+(k.courtCount*2)+' pairs';
+  btnRow.appendChild(backBtn);btnRow.appendChild(nextBtn);
+  pg.appendChild(btnRow);
+  pg.appendChild(countNote);
+}
+
+function renderKotcSeeding(pg){
+  const k=S.kotc;
+  const wc=kotcWinnerCourts(k.courtCount);
+  const bc=kotcBackCourts(k.courtCount);
+
+  // Seed pairs to courts
+  if(!k._seededCourts){
+    let orderedPairs=[...k.pairs];
+    if(k.seedMethod==='ai'){
+      // Sort by avg WTN ascending (stronger = lower number = Court 1)
+      orderedPairs.sort((a,b)=>{
+        const avgWtn=pair=>{ const vals=[pair.p1,pair.p2].filter(Boolean).map(p=>parseFloat(p.wtnD||p.wtnS||p.wtn||30)).filter(v=>!isNaN(v)); return vals.length?vals.reduce((s,v)=>s+v,0)/vals.length:30;};
+        return avgWtn(a)-avgWtn(b);
+      });
+    } else if(k.seedMethod==='random'){
+      orderedPairs=shuf(orderedPairs);
+    }
+    // Assign pairs to courts (2 pairs per court)
+    k._seededCourts=[];
+    for(let i=1;i<=k.courtCount;i++){
+      const isBack=i>wc;
+      const pairA=orderedPairs[(i-1)*2]||null;
+      const pairB=orderedPairs[(i-1)*2+1]||null;
+      k._seededCourts.push({courtNum:i,isBackDraw:isBack,pairA,pairB,score:{s1:'',s2:'',tb:'',confirmed:false},winner:null});
+    }
+    saveKotc();
+  }
+
+  const card=mk('div','card');
+  card.innerHTML=`<div class="ct">👑 Court Seeding — Round 1</div><div style="font-size:.75rem;color:var(--text-muted);margin-bottom:12px">Review court assignments. Tap pairs to swap between courts.</div>`;
+
+  k._seededCourts.forEach((c,ci)=>{
+    const isBack=c.isBackDraw;
+    const courtDiv=mk('div');
+    courtDiv.style.cssText=`padding:10px 12px;border-radius:9px;border:1px solid ${isBack?'rgba(201,168,76,.3)':'var(--border)'};background:${isBack?'rgba(201,168,76,.05)':'var(--surface2)'};margin-bottom:8px`;
+    const cHdr=mk('div');cHdr.style.cssText='display:flex;align-items:center;gap:7px;margin-bottom:8px';
+    cHdr.innerHTML=`<span style="font-family:'Bebas Neue',sans-serif;font-size:.9rem;color:var(--lime)">Court ${c.courtNum}</span>${c.courtNum===1?'<span style="font-size:.8rem">👑</span>':''}${isBack?'<span style="font-size:.65rem;padding:1px 6px;background:rgba(201,168,76,.15);border:1px solid rgba(201,168,76,.3);border-radius:10px;color:var(--gold)">Back Draw</span>':'<span style="font-size:.65rem;padding:1px 6px;background:rgba(52,199,89,.1);border:1px solid var(--green);border-radius:10px;color:var(--green)">Winner Draw</span>'}`;
+    courtDiv.appendChild(cHdr);
+
+    // Pair display with swap dropdowns
+    [[c.pairA,'A'],[c.pairB,'B']].forEach(([pair,side])=>{
+      const pRow=mk('div');pRow.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:5px';
+      const lbl=mk('span');lbl.style.cssText='font-size:.65rem;color:var(--text-muted);min-width:14px';lbl.textContent=side;
+      const sel=document.createElement('select');
+      sel.style.cssText='flex:1;padding:5px 7px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.78rem;font-family:inherit';
+      sel.innerHTML=k.pairs.map(p=>`<option value="${p.id}" ${pair&&pair.id===p.id?'selected':''}>${esc(p.p1.name+(p.p2?' + '+p.p2.name:''))}</option>`).join('');
+      sel.onchange=()=>{
+        const chosen=k.pairs.find(p=>p.id===parseInt(sel.value));
+        if(side==='A') k._seededCourts[ci].pairA=chosen;
+        else k._seededCourts[ci].pairB=chosen;
+        saveKotc();
+      };
+      pRow.appendChild(lbl);pRow.appendChild(sel);
+      courtDiv.appendChild(pRow);
+    });
+    card.appendChild(courtDiv);
+  });
+
+  const btnRow=mk('div');btnRow.style.cssText='display:flex;gap:8px;margin-top:8px';
+  const backBtn=mk('button','btn btn-s');backBtn.textContent='← Back';backBtn.style.cssText='flex:1;padding:11px';
+  backBtn.onclick=()=>{k._seededCourts=null;k.status='intake';saveKotc();render();};
+  const startBtn=mk('button','btn btn-p');startBtn.innerHTML='👑 Start Round 1';startBtn.style.cssText='flex:2;padding:11px;font-size:.92rem';
+  startBtn.onclick=()=>{
+    k.rounds=[{roundNum:1,courts:k._seededCourts,movements:[]}];
+    k._seededCourts=null;
+    k.status='active';
+    saveKotc();render();
+  };
+  btnRow.appendChild(backBtn);btnRow.appendChild(startBtn);
+  card.appendChild(btnRow);
+  pg.appendChild(card);
+}
+
+function renderKotcRound(pg){
+  const k=S.kotc;
+  const round=k.rounds[k.rounds.length-1];
+  const fmt=MATCH_FORMATS[k.format||'no-ad']||MATCH_FORMATS['no-ad'];
+
+  const hdr=mk('div','card');
+  hdr.innerHTML=`<div class="ct">👑 Round ${round.roundNum}</div>`;
+  pg.appendChild(hdr);
+
+  let confirmedCount=0;
+  round.courts.forEach((c,ci)=>{
+    const isBack=c.isBackDraw;
+    const cc=mk('div','ccard');
+    const pA=c.pairA,pB=c.pairB;
+    const pAname=pA?(pA.p1.name+(pA.p2?' & '+pA.p2.name:'')):'TBD';
+    const pBname=pB?(pB.p1.name+(pB.p2?' & '+pB.p2.name:'')):'TBD';
+
+    cc.innerHTML=`<div class="chdr"><div class="cname">Court ${c.courtNum} ${c.courtNum===1?'👑':''} <span style="font-size:.6rem;padding:1px 6px;border-radius:10px;margin-left:4px;${isBack?'background:rgba(201,168,76,.2);color:var(--gold)':'background:rgba(52,199,89,.15);color:var(--green)'};">${isBack?'Back Draw':'Winner Draw'}</span></div></div>
+      <div class="tgrid">
+        <div class="team"><div class="pname">${esc(pAname)}</div>${pA?'<div class="pwtn">'+[pA.p1,pA.p2].filter(Boolean).map(p=>{const w=courtWtnStr(p,k.matchType==='doubles');return w.str||'';}).filter(Boolean).join(' · ')+'</div>':''}</div>
+        <div class="vs-txt">VS</div>
+        <div class="team r"><div class="pname">${esc(pBname)}</div>${pB?'<div class="pwtn">'+[pB.p1,pB.p2].filter(Boolean).map(p=>{const w=courtWtnStr(p,k.matchType==='doubles');return w.str||'';}).filter(Boolean).join(' · ')+'</div>':''}</div>
+      </div>`;
+
+    // Score entry
+    if(!c.score.confirmed){
+      const sc=mk('div');sc.style.cssText='padding:8px 12px;border-top:1px solid var(--border)';
+      const sRow=mk('div');sRow.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:8px';
+      const s1=document.createElement('input');s1.type='number';s1.placeholder='0';s1.value=c.score.s1||'';
+      s1.style.cssText='width:50px;padding:6px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:1rem;text-align:center;font-family:inherit';
+      s1.oninput=()=>{c.score.s1=s1.value;saveKotc();};
+      const dash=mk('span');dash.textContent='–';dash.style.cssText='color:var(--text-muted);font-size:1rem';
+      const s2=document.createElement('input');s2.type='number';s2.placeholder='0';s2.value=c.score.s2||'';
+      s2.style.cssText=s1.style.cssText;
+      s2.oninput=()=>{c.score.s2=s2.value;saveKotc();};
+      sRow.appendChild(s1);sRow.appendChild(dash);sRow.appendChild(s2);
+
+      const confBtn=mk('button','btn btn-p btn-sm');confBtn.textContent='✓ Confirm';confBtn.style.cssText='width:100%;padding:8px';
+      confBtn.onclick=()=>{
+        const v1=parseInt(s1.value),v2=parseInt(s2.value);
+        if(isNaN(v1)||isNaN(v2)){alert('Enter both scores.');return;}
+        c.score.s1=v1;c.score.s2=v2;c.score.confirmed=true;
+        c.winner=v1>v2?'A':'B';
+        saveKotc();render();
+      };
+      sc.appendChild(sRow);sc.appendChild(confBtn);
+      cc.appendChild(sc);
+    } else {
+      confirmedCount++;
+      const conf=mk('div');conf.style.cssText='padding:7px 12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between';
+      conf.innerHTML=`<span style="font-family:monospace;font-size:1.1rem;font-weight:700;color:var(--green)">${c.score.s1} – ${c.score.s2}</span><span class="conf-badge">✓ ${c.winner==='A'?esc(pAname):esc(pBname)} wins</span>`;
+      cc.appendChild(conf);
+    }
+    pg.appendChild(cc);
+  });
+
+  // Progress
+  const prog=mk('div');prog.style.cssText='font-size:.75rem;color:var(--text-muted);text-align:center;margin:8px 0';
+  prog.textContent=confirmedCount+'/'+round.courts.length+' courts confirmed';
+  pg.appendChild(prog);
+
+  const allDone=confirmedCount===round.courts.length;
+  const mvBtn=mk('button','btn btn-p');
+  mvBtn.innerHTML='View Movement →';
+  mvBtn.style.cssText=`width:100%;padding:12px;font-size:.9rem;opacity:${allDone?1:.4}`;
+  if(allDone){
+    mvBtn.onclick=()=>{
+      kotcCommitRound(k);
+      round.movements=kotcComputeMovement(round,k.courtCount);
+      k.status='movement';
+      saveKotc();render();
+    };
+  }
+  pg.appendChild(mvBtn);
+}
+
+function renderKotcMovement(pg){
+  const k=S.kotc;
+  const round=k.rounds[k.rounds.length-1];
+  const movements=round.movements||[];
+  const isLastRound=round.roundNum>=3;
+
+  const card=mk('div','card');
+  card.innerHTML=`<div class="ct">Round ${round.roundNum} → Round ${round.roundNum+1} Movement</div><div style="font-size:.75rem;color:var(--text-muted);margin-bottom:12px">Review court movements. Tap a court to override before confirming.</div>`;
+
+  // Show movement per court
+  const wc=kotcWinnerCourts(k.courtCount);
+  for(let courtNum=1;courtNum<=k.courtCount;courtNum++){
+    const isBack=courtNum>wc;
+    const courtMovs=movements.filter(m=>m.fromCourt===courtNum);
+    const courtDiv=mk('div');
+    courtDiv.style.cssText=`padding:9px 12px;border-radius:9px;border:1px solid ${isBack?'rgba(201,168,76,.3)':'var(--border)'};background:var(--surface2);margin-bottom:7px`;
+    let html=`<div style="font-family:'Bebas Neue',sans-serif;font-size:.85rem;color:var(--lime);margin-bottom:5px">Court ${courtNum} ${courtNum===1?'👑':''}</div>`;
+    courtMovs.forEach(m=>{
+      const pair=k.pairs.find(p=>p.id===m.pairId);
+      if(!pair) return;
+      const name=pair.p1.name+(pair.p2?' & '+pair.p2.name:'');
+      let arrow='',color='var(--text)';
+      if(m.crown){arrow='👑 ';color='var(--gold)';}
+      else if(m.promoted){arrow='⬆ ';color='var(--green)';}
+      else if(m.stays){arrow='➡ ';color='var(--text-muted)';}
+      else if(m.toCourt<m.fromCourt){arrow='↑ Court '+m.toCourt+' ';color='var(--green)';}
+      else if(m.toCourt>m.fromCourt){arrow='↓ Court '+m.toCourt+' ';color='var(--red)';}
+      html+=`<div style="font-size:.8rem;color:${color};padding:2px 0">${arrow}${esc(name)}</div>`;
+    });
+    courtDiv.innerHTML=html;
+    card.appendChild(courtDiv);
+  }
+  pg.appendChild(card);
+
+  const btnRow=mk('div');btnRow.style.cssText='display:flex;gap:8px';
+  if(isLastRound){
+    const finBtn=mk('button','btn btn-p');finBtn.innerHTML='🏆 View Results';finBtn.style.cssText='flex:1;padding:12px;font-size:.9rem';
+    finBtn.onclick=()=>{k.status='summary';saveKotc();render();};
+    btnRow.appendChild(finBtn);
+  } else {
+    const nextBtn=mk('button','btn btn-p');nextBtn.innerHTML='Start Round '+(round.roundNum+1)+' →';nextBtn.style.cssText='flex:1;padding:12px;font-size:.9rem';
+    nextBtn.onclick=()=>{
+      const nextRound=kotcBuildNextRound(k);
+      k.rounds.push(nextRound);
+      k.status='active';
+      saveKotc();render();
+    };
+    btnRow.appendChild(nextBtn);
+  }
+  pg.appendChild(btnRow);
+}
+
+function renderKotcSummary(pg){
+  const k=S.kotc;
+  const wc=kotcWinnerCourts(k.courtCount);
+  const bc=kotcBackCourts(k.courtCount);
+  const lastRound=k.rounds[k.rounds.length-1];
+
+  // Find KOTC winner — pair on Court 1 that won last round
+  const court1=lastRound.courts.find(c=>c.courtNum===1);
+  const kotcWinner=court1&&court1.winner?( court1.winner==='A'?court1.pairA:court1.pairB):null;
+
+  // Find Back Draw winner if applicable
+  let backWinner=null;
+  if(bc>0){
+    const backCourt=lastRound.courts.find(c=>c.courtNum===wc+1);
+    backWinner=backCourt&&backCourt.winner?(backCourt.winner==='A'?backCourt.pairA:backCourt.pairB):null;
+  }
+
+  const card=mk('div','card');
+  card.innerHTML=`<div class="ct">👑 KOTC Results</div>`;
+
+  // KOTC Champion
+  if(kotcWinner){
+    const champ=mk('div');
+    champ.style.cssText='text-align:center;padding:16px;background:linear-gradient(135deg,rgba(201,168,76,.15),rgba(52,199,89,.1));border-radius:12px;border:1px solid var(--gold);margin-bottom:12px';
+    champ.innerHTML=`<div style="font-size:2rem;margin-bottom:4px">👑</div><div style="font-size:.65rem;text-transform:uppercase;letter-spacing:2px;color:var(--gold);margin-bottom:4px">King of the Court</div><div style="font-size:1.1rem;font-weight:700;color:var(--text)">${esc(kotcWinner.p1.name+(kotcWinner.p2?' & '+kotcWinner.p2.name:''))}</div>`;
+    card.appendChild(champ);
+  }
+
+  if(backWinner){
+    const bchamp=mk('div');
+    bchamp.style.cssText='text-align:center;padding:10px;background:var(--surface2);border-radius:10px;border:1px solid var(--border);margin-bottom:12px';
+    bchamp.innerHTML=`<div style="font-size:.65rem;text-transform:uppercase;letter-spacing:2px;color:var(--text-muted);margin-bottom:3px">Back Draw Champion</div><div style="font-size:.9rem;font-weight:600;color:var(--text)">${esc(backWinner.p1.name+(backWinner.p2?' & '+backWinner.p2.name:''))}</div>`;
+    card.appendChild(bchamp);
+  }
+
+  // Round by round results
+  k.rounds.forEach(r=>{
+    const rHdr=mk('div');rHdr.style.cssText='font-size:.65rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin:10px 0 5px';rHdr.textContent='Round '+r.roundNum;card.appendChild(rHdr);
+    r.courts.forEach(c=>{
+      if(!c.score.confirmed) return;
+      const pA=c.pairA,pB=c.pairB;
+      const row=mk('div');row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:var(--surface2);border-radius:7px;margin-bottom:3px;font-size:.78rem';
+      const w=c.winner==='A'?pA:pB,l=c.winner==='A'?pB:pA;
+      row.innerHTML=`<span style="color:var(--lime)">Ct ${c.courtNum}</span> <span style="font-weight:600;color:var(--green)">${esc(w?w.p1.name+(w.p2?' & '+w.p2.name:''):'?')}</span> <span style="color:var(--text-muted)">def.</span> <span>${esc(l?l.p1.name+(l.p2?' & '+l.p2.name:''):'?')}</span> <span style="font-family:monospace;font-weight:700">${c.score.s1}–${c.score.s2}</span>`;
+      card.appendChild(row);
+    });
+  });
+
+  // Guest roster prompt
+  const guests=k.pairs.filter(p=>p.isGuest);
+  if(guests.length){
+    const gCard=mk('div');gCard.style.cssText='margin-top:14px;padding:12px;background:var(--surface2);border-radius:10px;border:1px solid var(--border)';
+    gCard.innerHTML=`<div style="font-size:.75rem;font-weight:600;color:var(--text);margin-bottom:8px">Add guests to your roster?</div>`;
+    const gPlayers=[...new Map(guests.flatMap(p=>[p.p1,p.p2]).filter(Boolean).map(p=>[p.id,p])).values()];
+    gPlayers.forEach(p=>{
+      const row=mk('div');row.style.cssText='display:flex;align-items:center;justify-content:space-between;margin-bottom:5px';
+      row.innerHTML=`<span style="font-size:.8rem;color:var(--text)">${esc(p.name)}</span>`;
+      const addBtn=mk('button','btn btn-s btn-sm');addBtn.textContent='+ Add to Roster';addBtn.style.cssText='font-size:.7rem;padding:4px 10px';
+      addBtn.onclick=()=>{
+        if(!S.roster.find(r=>r.id===p.id)){
+          p.isGuest=false;S.roster.push(p);saveR();
+        }
+        addBtn.textContent='✓ Added';addBtn.disabled=true;
+      };
+      row.appendChild(addBtn);gCard.appendChild(row);
+    });
+    card.appendChild(gCard);
+  }
+
+  const doneBtn=mk('button','btn btn-p');doneBtn.innerHTML='Done';doneBtn.style.cssText='width:100%;padding:12px;margin-top:14px;font-size:.9rem';
+  doneBtn.onclick=()=>{k.status='complete';saveKotc();render();};
+  card.appendChild(doneBtn);
+  pg.appendChild(card);
+}
+
 function renderEvent(pg){
   if(S.sub==='setup')renderSetup(pg);
   else if(S.sub==='manual')renderManual(pg);
@@ -2493,6 +3130,13 @@ function renderSetup(pg){
   const ev=S.event||{};
   const now=new Date(),defD=today(),defT=`${p2(now.getHours())}:${p2(Math.ceil(now.getMinutes()/5)*5)}`;
   _sel=new Set(ev.playerIds||[]);_pairs=(ev.lockedPairs||[]).map(p=>[...p]);_chosenLayout=ev.chosenLayout||null;
+
+  // KOTC shortcut button
+  const kotcShortcut=mk('button','btn btn-s btn-sm');
+  kotcShortcut.innerHTML='👑 Switch to KOTC Mode';
+  kotcShortcut.style.cssText='width:100%;padding:9px;margin-bottom:14px;font-size:.82rem;border-color:var(--gold);color:var(--gold)';
+  kotcShortcut.onclick=()=>{S.page='kotc';render();};
+  pg.appendChild(kotcShortcut);
 
   // Numbered section header helper
   const secHdr=(n,title)=>{
@@ -3549,7 +4193,7 @@ function renderPlay(pg){
       tfull.forEach((p,pi)=>{
         const cell=mk('div','');
         cell.style.cssText='position:relative;'+(conf?'':'cursor:pointer;');
-        const bw=bestWtnStr(p);
+        const {str:wtnStr, note:wtnNote}=courtWtnStr(p, isD);
         const nameEl=mk('div','pname');
         nameEl.innerHTML=(winSide===teamIdx?'&#10003; ':'')+esc(p.name);
         if(!conf){
@@ -3558,7 +4202,13 @@ function renderPlay(pg){
           nameEl.onclick=(e)=>{e.stopPropagation();showSwapModal(sess,ci,teamIdx,pi);};
         }
         cell.appendChild(nameEl);
-        if(bw){const wEl=mk('div','pwtn');wEl.title=wtnTooltip(p);wEl.textContent=bw;cell.appendChild(wEl);}
+        if(wtnStr){
+          const wEl=mk('div','pwtn');
+          wEl.title=wtnTooltip(p);
+          wEl.textContent=wtnStr+(wtnNote?' ('+wtnNote+')':'');
+          if(wtnNote) wEl.style.color='var(--gold)';
+          cell.appendChild(wEl);
+        }
         wrap.appendChild(cell);
       });
       if(winSide===teamIdx){const wb=mk('div','win-badge win'+teamIdx);if(teamIdx===2)wb.style.marginLeft='auto';wb.textContent='WINNER';wrap.appendChild(wb);}
